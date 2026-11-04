@@ -22,5 +22,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/barker59/pearl-srb:3.8.3
+            ghcr.io/barker59/pearl-srb:3.8.3-tini
             ghcr.io/barker59/pearl-srb:latest

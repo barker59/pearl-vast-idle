@@ -4,6 +4,8 @@
 JOB_IMAGE_RE='^ghcr\.io/barker59/pearl-srb(:|$)'
 TUNE=/opt/pearl-idle/pearl-tune.sh
 STATE_DIR=/run/pearl-tuned.d   # one file per tuned GPU, maintained by pearl-tune.sh
+STABLE=${STABLE:-20}           # seconds the job must stay up on a GPU before tuning; resets are immediate
+declare -A seen                # GPU index -> when the job was first seen on it
 
 log() { echo "$(date '+%F %T') $*"; }
 
@@ -27,8 +29,13 @@ sync_gpus() {
     i=${f##*/}
     grep -qx "$i" <<<"$want" || log "GPU$i: $($TUNE reset-gpu "$i" 2>&1)"
   done
+  for i in "${!seen[@]}"; do
+    grep -qx "$i" <<<"$want" || unset "seen[$i]"
+  done
   for i in $want; do
-    [ -e "$STATE_DIR/$i" ] || log "GPU$i: $($TUNE apply-gpu "$i" 2>&1)"
+    : "${seen[$i]:=$(date +%s)}"
+    [ -e "$STATE_DIR/$i" ] && continue
+    [ $(( $(date +%s) - seen[$i] )) -ge $STABLE ] && log "GPU$i: $($TUNE apply-gpu "$i" 2>&1)"
   done
 }
 
