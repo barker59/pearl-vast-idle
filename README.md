@@ -13,3 +13,9 @@ The image holds only the miner; the wallet and pool are passed as job args. It i
 by `.github/workflows/build-image.yml` and published to `ghcr.io/barker59/pearl-srb`.
 
 Do not commit passwords, tokens or API keys here.
+
+## Starting a job
+
+`vastai set defjob` can leave the instances queued for 13+ minutes. Running
+`vastai start instance <id>` on any queued instance of that machine started the job on every
+free GPU within 20 seconds. Find the ids with `vastai show instances`.
