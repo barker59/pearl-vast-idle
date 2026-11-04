@@ -1,0 +1,13 @@
+[Unit]
+Description=Tune only the GPUs running the Pearl Vast default job
+After=docker.service vastai.service gpu-power-limit.service
+Requires=docker.service
+
+[Service]
+ExecStart=/opt/pearl-idle/pearl-job-watch.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
