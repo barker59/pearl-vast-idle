@@ -14,6 +14,9 @@
 #         PEARL_PL_MIN/MAX. No combined cap any more (3 kW PSU since 2026-11-02); the
 #         only coupling is PEARL_BALANCE_W, which keeps the two limits within that
 #         many watts of each other (GPU1 sits below GPU0 and heats it).
+#   DEFAULT JOB: the Pearl Vast default job is not a rental. Each card running it gets the
+#         pearl profile after JOB_STABLE seconds and goes back to stock as soon as the job
+#         stops; renters' cards are never tuned.
 
 LIST=/var/lib/vastai_kaalia/data/container_list.json
 FAN_TOOL=/usr/local/bin/vast-set-fan.py
@@ -24,11 +27,13 @@ MINING_PAUSED_FLAG=/etc/vast-mining-paused
 # GPU fans below 100%; the power governor then trims power to stay under the temp ceiling.
 # Missing/invalid file = 100%. Rentals always get 100%.
 PEARL_FAN_FILE=/home/aaron/pearl-gpu-fan-pct
+JOB_IMAGE_RE='^ghcr\.io/barker59/pearl-srb([:_]|$)'
+JOB_STABLE=20        # seconds the job must stay up on a GPU before tuning; resets are immediate
 
 is_rental_active() {
     [ -s "$LIST" ] || return 1
-    "$PY" - "$LIST" <<'PYEOF'
-import json, sys
+    "$PY" - "$LIST" "$JOB_IMAGE_RE" <<'PYEOF'
+import json, re, sys
 try:
     data = json.load(open(sys.argv[1]))
 except Exception:
@@ -36,6 +41,8 @@ except Exception:
 if not isinstance(data, list):
     sys.exit(1)
 for c in data:
+    if re.search(sys.argv[2], (c.get("Config") or {}).get("Image") or ""):
+        continue
     s = c.get("State", {}) or {}
     if s.get("Running") is True or s.get("Status") == "running":
         sys.exit(0)
@@ -94,7 +101,7 @@ tune_pearl_pl() {
     for i in "${!cur_pl[@]}"; do
         t=$("$SMI" -i "$i" --query-gpu=temperature.gpu --format=csv,noheader,nounits) || continue
         new=${cur_pl[$i]}
-        lo=${cur_pl[0]}; for j in "${!cur_pl[@]}"; do [ "${cur_pl[$j]}" -lt "$lo" ] && lo=${cur_pl[$j]}; done
+        lo=; for j in "${!cur_pl[@]}"; do if [ -z "$lo" ] || [ "${cur_pl[$j]}" -lt "$lo" ]; then lo=${cur_pl[$j]}; fi; done
         if [ "$t" -ge $((PEARL_CEIL_C + 1)) ]; then
             new=$((new - PEARL_PL_DOWN))
             [ "$new" -lt "${PEARL_PL_MIN[$i]}" ] && new=${PEARL_PL_MIN[$i]}
@@ -113,6 +120,55 @@ tune_pearl_pl() {
 gpu_profile_stock() {
     "$SMI" -rmc 2>&1 | logger -t vast-rental-guard
     "$SMI" -pl "$STOCK_PL" 2>&1 | logger -t vast-rental-guard
+}
+
+declare -A job_seen job_tuned   # GPU index -> first seen running the job / tuned for it
+job_active=0
+
+job_gpus() {  # GPU indexes running the default job; fails if docker can't be read
+    local ps id image devs d
+    ps=$(docker ps --filter status=running --format '{{.ID}} {{.Image}}') || return 1
+    while read -r id image; do
+        [[ $image =~ $JOB_IMAGE_RE ]] || continue
+        devs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" | sed -n 's/^NVIDIA_VISIBLE_DEVICES=//p')
+        for d in ${devs//,/ }; do
+            [[ $d =~ ^[0-9]+$ ]] && echo "$d"
+        done
+    done <<<"$ps"
+    return 0
+}
+
+job_tune_gpu() {
+    logger -t vast-rental-guard "gpu$1: default job running, pearl profile"
+    "$SMI" -i "$1" -lmc "$PEARL_MEMCLK" 2>&1 | logger -t vast-rental-guard
+    "$SMI" -i "$1" -pl "${PEARL_PL[$1]}" 2>&1 | logger -t vast-rental-guard
+    cur_pl[$1]=${PEARL_PL[$1]}
+    job_tuned[$1]=1
+}
+
+job_reset_gpu() {
+    logger -t vast-rental-guard "gpu$1: default job stopped, stock profile"
+    "$SMI" -i "$1" -rmc 2>&1 | logger -t vast-rental-guard
+    "$SMI" -i "$1" -pl "$STOCK_PL" 2>&1 | logger -t vast-rental-guard
+    unset "cur_pl[$1]" "job_tuned[$1]"
+}
+
+sync_job_gpus() {
+    local want i now
+    want=$(job_gpus) || return
+    now=$(date +%s)
+    [ -n "$want" ] && job_active=1 || job_active=0
+    for i in "${!job_tuned[@]}"; do
+        grep -qx "$i" <<<"$want" || job_reset_gpu "$i"
+    done
+    for i in "${!job_seen[@]}"; do
+        grep -qx "$i" <<<"$want" || unset "job_seen[$i]"
+    done
+    for i in $want; do
+        : "${job_seen[$i]:=$now}"
+        [ -n "${job_tuned[$i]}" ] && continue
+        [ $((now - job_seen[$i])) -ge "$JOB_STABLE" ] && job_tune_gpu "$i"
+    done
 }
 
 fans_max() {
@@ -225,10 +281,12 @@ while true; do
         fi
     fi
 
-    # FANS: 100% whenever a rental is active OR the pearl(srb) miner is running.
+    sync_job_gpus
+
+    # FANS: 100% whenever a rental is active OR the pearl(srb) miner or default job is running.
     if [ "$active" = 1 ]; then
         apply_fans max
-    elif pearl_running; then
+    elif [ "$job_active" = 1 ] || pearl_running; then
         fp=$(pearl_fan_pct)
         if [ "$fp" = 100 ]; then apply_fans max; else apply_fans "$fp"; fi
     else
@@ -242,7 +300,9 @@ while true; do
         apply_gpu_profile stock
     fi
     tick=$((tick + 1))
-    [ "$gpu_state" = pearl ] && [ $((tick % 15)) = 0 ] && tune_pearl_pl
+    if [ "$gpu_state" = pearl ] || [ "${#job_tuned[@]}" -gt 0 ]; then
+        [ $((tick % 15)) = 0 ] && tune_pearl_pl
+    fi
 
     sleep 2
 done
