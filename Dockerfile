@@ -1,8 +1,9 @@
 FROM ubuntu:24.04
-ARG SRB_VER=3.8.3
-ARG SRB_SHA256=c9e10baae24d1811c04d30a416e237774e9e16110276c864a4221395f9f55e8b
+ARG SRB_VER=3.8.6
+ARG SRB_SHA256=15be08f4fe5c044418be20c8ef4e5aedff1bf4db198c9b7067c9e3f44bd2b43b
 ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini \
+# wget stays in the image: SRBMiner 3.8.6 exits (code 73) at startup without it.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini wget \
  && f=SRBMiner-Multi-$(echo $SRB_VER | tr . -)-Linux.tar.gz \
  && curl -fsSLo /tmp/$f https://github.com/doktor83/SRBMiner-Multi/releases/download/$SRB_VER/$f \
  && echo "$SRB_SHA256  /tmp/$f" | sha256sum -c - \
