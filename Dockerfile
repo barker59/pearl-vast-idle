@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
-ARG SRB_VER=3.8.7
-ARG SRB_SHA256=1fe6e9098a27446f62bb7388dac549913852a56cb8fab76dd840b77f7498f612
+ARG SRB_VER=3.8.8
+ARG SRB_SHA256=c203e79e9dc467ec5daaa1e1771e08561a70d2c9dcc397364b8ae7ae558e50d8
 ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
 # wget stays in the image: SRBMiner 3.8.6 exits (code 73) at startup without it.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini wget \
